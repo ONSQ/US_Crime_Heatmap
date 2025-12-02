@@ -15,7 +15,7 @@ st.title("US County Crime Rate, Age and Race Statistics Interactive Heatmap")
 st.caption("The 48 continental states are included in this analysis.")
 st.caption("Search US counties and visualize crime by offense type.")
 st.caption("Search US counties and visualize Race and Age Statistics.")
-st.caption("Data from FBI Crime Data and US Census. All crimes listed are preadjudicated and not convictions.")    
+st.caption("Data from the 2024 FBI Crime Data and 2020 US Census. All crimes listed are preadjudicated and not convictions.")    
 st.caption("Webapp by Owen Eskew (WGN372), Data Crafting by Torben Rehnert (ODS799), Data analysis and presentation by Emmanuel Amoah (DSN270)")
 
 
