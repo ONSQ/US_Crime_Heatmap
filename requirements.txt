@@ -1,7 +1,10 @@
 streamlit
 pandas
-geopandas
 folium
 streamlit-folium
 openpyxl
 matplotlib
+geopy
+scikit-learn
+plotly
+statsmodels

@@ -7,13 +7,17 @@ from streamlit_folium import st_folium
 
 import config
 import data_manager
+import ml_analysis
 
 # --- APP CONFIG ---
 st.set_page_config(layout="wide")
-st.title("Texas Crime Rate Interactive Heatmap")
-st.caption("Search Texas cities and visualize crime by offense type.")
-st.caption("Data from the 2023 FBI NIBRS, TX DP2023, and USCensus Datasets. All crimes listed are preadjudicated and not convictions.")    
-st.caption("Webapp by Owen Eskew (WGN372)")
+st.title("US County Crime Rate, Age and Race Statistics Interactive Heatmap")
+st.caption("The 48 continental states are included in this analysis.")
+st.caption("Search US counties and visualize crime by offense type.")
+st.caption("Search US counties and visualize Race and Age Statistics.")
+st.caption("Data from FBI Crime Data and US Census. All crimes listed are preadjudicated and not convictions.")    
+st.caption("Webapp by Owen Eskew (WGN372), Data Crafting by Torben Rehnert (ODS799), Data analysis and presentation by Emmanuel Amoah (DSN270)")
+
 
 # --- DATA LOADING ---
 st.sidebar.header("📂 Data Management")
@@ -35,32 +39,31 @@ if uploaded_file is not None:
 else:
     df = data_manager.load_data(selected_year)
 
-land_df = data_manager.load_land_area()
-gdf_places = data_manager.load_places()
-
-# Merge and Process
-# Ensure column names are consistent and exist
-if "Agency" not in df.columns:
-    st.error(f"Column 'Agency' not found in {config.DATA_FILE}")
+# Ensure required columns exist
+if "County_Name" not in df.columns:
+    st.error("Column 'County_Name' not found in data")
     st.stop()
 
-if "city" not in land_df.columns:
-    st.error(f"Column 'city' not found in {config.LAND_AREA_FILE}")
+if "State" not in df.columns:
+    st.error("Column 'State' not found in data")
     st.stop()
 
-df = data_manager.merge_and_process_data(df, land_df)
+# Process data
+df = data_manager.merge_and_process_data(df)
 
-# Add coordinates (this might be slow, consider caching if it becomes an issue)
-# For now, we do it on the fly as in the original app, but using the helper
-# To avoid re-calculating on every rerun, we could cache this step in data_manager
-# But since we can't easily cache the mutation, let's keep it here for now.
-# Optimization: Only calculate for displayed cities? No, heatmap needs all.
-# Let's assume the original performance was acceptable.
-df = data_manager.add_coordinates(df, gdf_places)
+# Add coordinates (fast CSV lookup)
+df = data_manager.add_coordinates(df)
 
 # --- SIDEBAR ---
 # Search bar
-search_city = st.sidebar.text_input("Search for a Texas city:")
+search_county = st.sidebar.text_input("Search for a US county:")
+
+# State filter
+if "State" in df.columns:
+    states = ["All States"] + sorted(df["State"].dropna().unique().tolist())
+    selected_state = st.sidebar.selectbox("Filter by State:", states)
+    if selected_state != "All States":
+        df = df[df["State"] == selected_state]
 
 # Identify all numeric crime-related columns (absolute numbers only)
 crime_types = [col for col in df.columns if col not in config.EXCLUDE_COLS 
@@ -92,7 +95,7 @@ df[crime_col] = pd.to_numeric(df[crime_col], errors="coerce")
 df_heat = df.dropna(subset=["latitude", "longitude", crime_col])
 
 # --- TABS LAYOUT ---
-tab1, tab2, tab3 = st.tabs(["🗺️ Heatmap & Search", "📊 Data Analysis", "🔮 Prediction Model"])
+tab1, tab2, tab3, tab4 = st.tabs(["🗺️ Heatmap & Search", "📊 Data Analysis", "🔮 Prediction Model", "🧠 Statistical Analysis"])
 
 with tab1:
     # --- METRICS ROW ---
@@ -100,7 +103,7 @@ with tab1:
     total_population = df["Population"].sum()
     total_crime = df[crime_col].sum()
     
-    st.markdown("### 🇨🇱 Texas Statewide Snapshot")
+    st.markdown("### US County Crime Snapshot")
     col_m1, col_m2, col_m3 = st.columns(3)
     col_m1.metric("Total Population", f"{int(total_population):,}")
     col_m2.metric(f"Total {crime_col}", f"{int(total_crime):,}")
@@ -115,29 +118,32 @@ with tab1:
     avg_lat, avg_lon = config.DEFAULT_LAT, config.DEFAULT_LON
     zoom_level = config.DEFAULT_ZOOM
 
-    if search_city:
-        results = df[df["Agency"].str.lower().str.contains(search_city.lower(), na=False)]
+    if search_county:
+        results = df[df["County_Name"].str.lower().str.contains(search_county.lower(), na=False)]
         if not results.empty:
-            city = results.iloc[0]
-            if pd.notnull(city["latitude"]) and pd.notnull(city["longitude"]):
-                avg_lat, avg_lon = city["latitude"], city["longitude"]
-                zoom_level = config.CITY_ZOOM
+            county = results.iloc[0]
+            if pd.notnull(county["latitude"]) and pd.notnull(county["longitude"]):
+                avg_lat, avg_lon = county["latitude"], county["longitude"]
+                zoom_level = config.COUNTY_ZOOM
             
-            # Display city stats in an expander or just below
-            with st.expander(f"Details for {city['Agency']}", expanded=True):
+            # Display county stats in an expander or just below
+            with st.expander(f"Details for {county['County_Name']}, {county['State']}", expanded=True):
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.write(f"**Coordinates:** ({city['latitude']:.4f}, {city['longitude']:.4f})")
-                    st.write(f"**Population:** {int(city['Population']):,}")
+                    st.write(f"**Coordinates:** ({county['latitude']:.4f}, {county['longitude']:.4f})")
+                    if pd.notnull(county['Population']):
+                        st.write(f"**Population:** {int(county['Population']):,}")
+                    else:
+                        st.write("**Population:** N/A")
                 with c2:
-                    abs_val = city[crime_col]
-                    pct_val = city.get(f"{crime_col} %")
+                    abs_val = county[crime_col]
+                    pct_val = county.get(f"{crime_col} %")
                     if pd.notnull(abs_val):
                         st.write(f"**{crime_col}:** {abs_val:,.0f}")
                     if pd.notnull(pct_val):
                         st.write(f"**Rate:** {pct_val:.2f}%")
         else:
-            st.warning("City not found. Try a different spelling?")
+            st.warning("County not found. Try a different spelling?")
 
     m = folium.Map(location=[avg_lat, avg_lon], zoom_start=zoom_level)
 
@@ -175,11 +181,14 @@ with tab1:
         percent_value = row.get(f"{crime_col} %", None)
 
         # HTML styled tooltip
+        pop_display = f"{int(row['Population']):,}" if pd.notnull(row['Population']) else "N/A"
+        crime_display = f"{abs_value:,.0f}" if pd.notnull(abs_value) else "N/A"
+        
         tooltip_text = f"""
         <div style="font-family: sans-serif; font-size: 12px;">
-            <b>{row['Agency']}</b><br>
-            Population: {int(row['Population']):,}<br>
-            {crime_col}: {abs_value:,.0f}<br>
+            <b>{row['County_Name']}, {row['State']}</b><br>
+            Population: {pop_display}<br>
+            {crime_col}: {crime_display}<br>
         """
         if percent_value is not None and pd.notnull(percent_value):
             tooltip_text += f"Rate: {percent_value:.2f}%"
@@ -199,7 +208,7 @@ with tab1:
 
 with tab2:
     # --- TOP/BOTTOM TABLES ---
-    st.subheader(f"Safest & Most Dangerous Cities by {crime_col}")
+    st.subheader(f"Safest & Most Dangerous Counties by {crime_col}")
     
     # Add a filter for population to make this more meaningful
     min_pop = st.slider("Minimum Population Filter", 0, 1000000, 0, 1000)
@@ -207,7 +216,7 @@ with tab2:
     filtered_df = df_heat[df_heat["Population"] >= min_pop]
     
     percent_col = f"{crime_col} %"
-    cols_to_show = ["Agency", "Population", crime_col]
+    cols_to_show = ["County_Name", "State", "Population", crime_col]
     if percent_col in filtered_df.columns:
         cols_to_show.append(percent_col)
 
@@ -226,7 +235,7 @@ with tab2:
     st.download_button(
         label="📥 Download Filtered Data as CSV",
         data=csv,
-        file_name='texas_crime_filtered.csv',
+        file_name='us_county_crime_filtered.csv',
         mime='text/csv',
     )
 
@@ -254,25 +263,31 @@ with tab3:
     st.info("This model uses linear regression on the current dataset to estimate crime levels based on population growth.")
 
     # Determine population value
-    if search_city:
-        results = df[df["Agency"].str.lower().str.contains(search_city.lower(), na=False)]
+    if search_county:
+        results = df[df["County_Name"].str.lower().str.contains(search_county.lower(), na=False)]
         if not results.empty:
-            city = results.iloc[0]
-            pop_int = int(city["Population"])
-            st.markdown(f"### Prediction for **{city['Agency']}**")
+            county = results.iloc[0]
+            if pd.notnull(county["Population"]):
+                pop_int = int(county["Population"])
+            else:
+                pop_int = int(df["Population"].sum())
+            st.markdown(f"### Prediction for **{county['County_Name']}, {county['State']}**")
         else:
             pop_int = int(df["Population"].sum())
-            st.markdown("### Statewide Prediction")
+            st.markdown("### National Prediction")
     else:
         pop_int = int(df["Population"].sum())
-        st.markdown("### Statewide Prediction")
+        st.markdown("### National Prediction")
 
     lower, upper = data_manager.predict_crime_growth(df, crime_col, pop_int)
 
     col_p1, col_p2 = st.columns(2)
     
     with col_p1:
-        st.write(f"**Current Population:** {pop_int:,}")
+        if pop_int > 0:
+            st.write(f"**Current Population:** {pop_int:,}")
+        else:
+            st.write("**Current Population:** N/A")
         st.write(
             f"**Predicted Population (±5%):** "
             f"{int(pop_int * 0.95):,} - {int(pop_int * 1.05):,}"
@@ -330,24 +345,96 @@ if len(config.DATA_FILES) > 1:
         all_years_df = data_manager.load_all_years()
         
         if not all_years_df.empty:
-            # City selection for trend
-            cities = sorted(all_years_df["Agency"].dropna().unique())
-            selected_cities_trend = st.multiselect("Select Cities to Compare", cities, default=cities[:3] if len(cities) > 3 else cities)
+            # County selection for trend
+            counties = sorted(all_years_df["County_Name"].dropna().unique())
+            selected_counties_trend = st.multiselect("Select Counties to Compare", counties, default=counties[:3] if len(counties) > 3 else counties)
             
-            if selected_cities_trend:
-                trend_data = all_years_df[all_years_df["Agency"].isin(selected_cities_trend)]
+            if selected_counties_trend:
+                trend_data = all_years_df[all_years_df["County_Name"].isin(selected_counties_trend)]
                 
                 if crime_col in trend_data.columns:
                     st.line_chart(
                         trend_data,
                         x="Year",
                         y=crime_col,
-                        color="Agency"
+                        color="County_Name"
                     )
                 else:
                     st.warning(f"Column '{crime_col}' not found in multi-year data.")
             else:
-                st.info("Select cities to see the trend.")
+                st.info("Select counties to see the trend.")
         else:
             st.warning("Could not load multi-year data.")
+
+with tab4:
+    st.subheader("🧠 Advanced Statistical Analysis")
+    st.caption("Machine learning insights into crime patterns across US counties.")
+    
+    # Sub-tabs for different analyses
+    ml_tab1, ml_tab2, ml_tab3, ml_tab4 = st.tabs(["Clustering", "Feature Importance", "Outlier Detection", "Income Analysis"])
+    
+    with ml_tab1:
+        st.markdown("### 🔍 County Clustering")
+        st.info("Groups counties with similar crime and demographic profiles using K-Means clustering.")
+        
+        n_clusters = st.slider("Number of Clusters", 2, 8, 5)
+        
+        if st.button("Run Clustering Analysis"):
+            with st.spinner("Running K-Means Clustering..."):
+                df_clustered, centers, features = ml_analysis.perform_clustering(df, n_clusters)
+                
+                # Show map
+                fig = ml_analysis.create_cluster_map(df_clustered)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Show cluster stats
+                st.markdown("#### Cluster Characteristics")
+                cluster_stats = df_clustered.groupby('Cluster_Label')[features].mean()
+                st.dataframe(cluster_stats.style.background_gradient(cmap="Blues"), use_container_width=True)
+    
+    with ml_tab2:
+        st.markdown("### 🌲 Feature Importance")
+        st.info("Uses Random Forest to determine which factors are most predictive of crime rates.")
+        
+        target_col = st.selectbox("Target Variable", ["Total Offenses", "Violent Crime", "Property Crime"])
+        
+        if st.button("Calculate Importance"):
+            with st.spinner("Training Random Forest Model..."):
+                importance_df = ml_analysis.calculate_feature_importance(df, target_col)
+                
+                fig = ml_analysis.create_feature_importance_chart(importance_df)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                with st.expander("View Detailed Importance Scores"):
+                    st.dataframe(importance_df, use_container_width=True)
+    
+    with ml_tab3:
+        st.markdown("### 🚨 Outlier Detection")
+        st.info("Identifies counties with unusual crime patterns using Isolation Forest.")
+        
+        contamination = st.slider("Contamination (Expected % of outliers)", 0.01, 0.15, 0.05, 0.01)
+        
+        if st.button("Detect Outliers"):
+            with st.spinner("Running Isolation Forest..."):
+                df_outliers = ml_analysis.detect_outliers(df, contamination)
+                
+                fig = ml_analysis.create_outlier_map(df_outliers)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                st.markdown("#### Detected Outliers")
+                outliers = df_outliers[df_outliers['Is_Outlier']]
+                st.write(f"Found {len(outliers)} outlier counties.")
+                st.dataframe(
+                    outliers[['County_Name', 'State', 'Population', 'Total Offenses', 'Violent Crime', 'Property Crime']], 
+                    use_container_width=True
+                )
+    
+    with ml_tab4:
+        st.markdown("### 💰 Income vs Crime")
+        st.info("Analyzes the relationship between median income and crime rates.")
+        
+        analysis_col = st.selectbox("Crime Category", ["Total Offenses", "Violent Crime", "Property Crime", "Murder", "Burglary"])
+        
+        fig = ml_analysis.create_income_crime_scatter(df, analysis_col)
+        st.plotly_chart(fig, use_container_width=True)
 

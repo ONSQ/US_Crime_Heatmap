@@ -1,28 +1,26 @@
-# Configuration settings for the Texas Crime Heatmap App
+# Configuration settings for the US County Crime Heatmap App
 
 # Data Files
 DATA_FILES = {
-    2023: "TexasCrimeDataCities.csv",
+    2023: "crime_data_county.csv",
     # Add future years here, e.g.:
-    # 2022: "TexasCrime2022.csv",
+    # 2022: "crime_data_county_2022.csv",
 }
 # Default to the latest year
 DEFAULT_YEAR = max(DATA_FILES.keys())
-LAND_AREA_FILE = "LandAreaTX2.csv"
-SHAPEFILE = "tl_2023_48_place.shp"
 
-# Map Settings
-DEFAULT_LAT = 31.4
-DEFAULT_LON = -99.9013
-DEFAULT_ZOOM = 6
-CITY_ZOOM = 10
+# Map Settings - US Center
+DEFAULT_LAT = 39.8  # Center of continental US
+DEFAULT_LON = -98.6  # Center of continental US
+DEFAULT_ZOOM = 4  # Show entire US
+COUNTY_ZOOM = 7  # Zoom level for individual county
 
 # Prediction Settings
 DEFAULT_GROWTH_RATE = 0.05
 
 # Columns to Exclude from Crime Analysis
 EXCLUDE_COLS = {
-    "Agency", "Agency Type", "Population", "land", "land area", 
-    "latitude", "longitude", "INTPTLAT", "INTPTLONG", 
-    "centroid", "city", "Population Density"
+    "State", "Metropolitan.Nonmetropolitan", "County", "County.2",
+    "latitude", "longitude", "Population", "Median_Income_2023",
+    "Percent..Total.housing.units"
 }

@@ -1,9 +1,14 @@
 import pandas as pd
-import geopandas as gpd
 import streamlit as st
 import numpy as np
 import config
 from typing import Tuple, Optional
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+import time
+
+# Initialize geocoder
+geolocator = Nominatim(user_agent="us_crime_heatmap")
 
 # --- DATA LOADING ---
 @st.cache_data
@@ -22,8 +27,41 @@ def load_data(year=None):
     filename = config.DATA_FILES[year]
     try:
         df = pd.read_csv(filename)
-        # Clean column names
-        df.columns = df.columns.str.strip().str.replace("\n", " ")
+        # Clean column names - replace dots with spaces for readability
+        df.columns = df.columns.str.strip().str.replace("\\n", " ")
+        
+        # Rename key columns for easier access
+        if "County.2" in df.columns:
+            df["County_Name"] = df["County.2"]
+        elif "County" in df.columns:
+            df["County_Name"] = df["County"]
+            
+        # Handle population column
+        if "Percent..SEX.AND.AGE..Total.population" in df.columns:
+            df["Population"] = pd.to_numeric(df["Percent..SEX.AND.AGE..Total.population"], errors="coerce")
+        
+        # Clean crime column names - replace dots with spaces
+        crime_cols_mapping = {
+            "Violent.crime": "Violent Crime",
+            "Murder.and.nonnegligent.manslaughter": "Murder",
+            "Rape": "Rape",
+            "Robbery": "Robbery",
+            "Aggravated.assault": "Aggravated Assault",
+            "Property.crime": "Property Crime",
+            "Burglary": "Burglary",
+            "Larceny..theft": "Larceny-Theft",
+            "Motor.vehicle.theft": "Motor Vehicle Theft",
+            "Arson1": "Arson"
+        }
+        
+        for old_name, new_name in crime_cols_mapping.items():
+            if old_name in df.columns:
+                df[new_name] = pd.to_numeric(df[old_name], errors="coerce")
+        
+        # Calculate Total Offenses
+        if "Violent Crime" in df.columns and "Property Crime" in df.columns:
+            df["Total Offenses"] = df["Violent Crime"].fillna(0) + df["Property Crime"].fillna(0)
+        
         return df
     except FileNotFoundError:
         st.error(f"File not found: {filename}")
@@ -38,11 +76,11 @@ def load_all_years():
     all_data = []
     for year, filename in config.DATA_FILES.items():
         try:
-            df = pd.read_csv(filename)
-            df.columns = df.columns.str.strip().str.replace("\n", " ")
-            df['Year'] = year
-            all_data.append(df)
-        except FileNotFoundError:
+            df = load_data(year)
+            if not df.empty:
+                df['Year'] = year
+                all_data.append(df)
+        except Exception:
             continue
             
     if not all_data:
@@ -50,71 +88,59 @@ def load_all_years():
         
     return pd.concat(all_data, ignore_index=True)
 
-@st.cache_resource
-def load_land_area() -> pd.DataFrame:
-    """Loads the land area data from CSV."""
+# --- GEOCODING ---
+@st.cache_data
+def load_county_coordinates():
+    """Load pre-computed county coordinates from CSV file."""
     try:
-        land_df = pd.read_csv(config.LAND_AREA_FILE)
-        land_df.columns = land_df.columns.str.strip().str.replace("\n", " ")
-        return land_df
+        coords_df = pd.read_csv("county_coordinates.csv")
+        return coords_df
     except FileNotFoundError:
-        st.error(f"File not found: {config.LAND_AREA_FILE}")
+        st.warning("County coordinates file not found. Using fallback geocoding (slower).")
         return pd.DataFrame()
 
-@st.cache_resource
-def load_places() -> gpd.GeoDataFrame:
-    """Loads the shapefile for Texas places."""
-    try:
-        gdf = gpd.read_file(config.SHAPEFILE)
-        # Calculate centroid for mapping
-        gdf["centroid"] = gdf.geometry.centroid
-        return gdf
-    except Exception as e:
-        st.error(f"Error loading shapefile: {e}")
-        return gpd.GeoDataFrame()
-
-# --- DATA PROCESSING ---
-@st.cache_data
-def merge_and_process_data(df: pd.DataFrame, land_df: pd.DataFrame) -> pd.DataFrame:
-    """Merges crime data with land area and calculates densities."""
-    
-    # Merge
-    if "Agency" in df.columns and "city" in land_df.columns:
-        df = df.merge(land_df, how="left", left_on="Agency", right_on="city")
-    
-    # Calculate population density
-    if "Population" in df.columns and "Land Area" in df.columns:
-        df["Population Density"] = df["Population"] / df["Land Area"]
-    else:
-        df["Population Density"] = None
-        
-    # Calculate crime percentage columns
-    for col in df.columns:
-        if col not in config.EXCLUDE_COLS and pd.api.types.is_numeric_dtype(df[col]):
-            if "Population" in df.columns:
-                df[f"{col} %"] = (df[col] / df["Population"]) * 100
-                
-    return df
-
-def get_city_latlon(name: str, gdf_places: gpd.GeoDataFrame) -> Tuple[Optional[float], Optional[float]]:
-    """Finds the latitude and longitude of a city using the shapefile."""
-    if gdf_places.empty:
-        return None, None
-    row = gdf_places[gdf_places["NAME"].str.lower() == name.lower()]
-    if not row.empty:
-        return row.iloc[0]["centroid"].y, row.iloc[0]["centroid"].x
-    else:
-        return None, None
-
-def add_coordinates(df: pd.DataFrame, gdf_places: gpd.GeoDataFrame) -> pd.DataFrame:
-    """Adds latitude and longitude columns to the dataframe."""
-    if gdf_places.empty:
+def add_coordinates(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds latitude and longitude columns to the dataframe.
+    Uses pre-computed coordinates for fast loading.
+    """
+    if "County_Name" not in df.columns or "State" not in df.columns:
         df["latitude"] = None
         df["longitude"] = None
         return df
-        
-    df["latitude"] = df["Agency"].apply(lambda x: get_city_latlon(str(x).strip(), gdf_places)[0] if pd.notnull(x) else None)
-    df["longitude"] = df["Agency"].apply(lambda x: get_city_latlon(str(x).strip(), gdf_places)[1] if pd.notnull(x) else None)
+    
+    # Load pre-computed coordinates
+    coords_df = load_county_coordinates()
+    
+    if not coords_df.empty:
+        # Merge with pre-computed coordinates
+        df = df.merge(
+            coords_df[["State", "County_Name", "latitude", "longitude"]], 
+            on=["State", "County_Name"], 
+            how="left"
+        )
+    else:
+        # Fallback: no coordinates available
+        df["latitude"] = None
+        df["longitude"] = None
+    
+    return df
+
+# --- DATA PROCESSING ---
+@st.cache_data
+def merge_and_process_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Processes county data and calculates crime percentages."""
+    
+    # Calculate crime percentage columns
+    for col in df.columns:
+        if col not in config.EXCLUDE_COLS and pd.api.types.is_numeric_dtype(df[col]):
+            if "Population" in df.columns and col != "Population":
+                # Avoid division by zero
+                df[f"{col} %"] = df.apply(
+                    lambda row: (row[col] / row["Population"]) * 100 if row["Population"] > 0 else 0,
+                    axis=1
+                )
+                
     return df
 
 # --- PREDICTION ---
